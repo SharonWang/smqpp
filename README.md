@@ -34,7 +34,7 @@ The smqpp should be fairly simple to use and it is based on Scanpy's AnnData obj
 
 ## Example Notebooks
 
-An example on Patel dataset can be found at [**Patel](https://github.com/SharonWang/smqpp/blob/master/examples/Example_patel_dataset.ipynb)
+An example on Patel dataset can be found at [**Patel**](https://github.com/SharonWang/smqpp/blob/master/examples/Example_patel_dataset.ipynb)
 
 ## Contact
 
