@@ -1,9 +1,16 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[ ]:
+
+
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import re
 import anndata
 from scipy.stats import chi2
+from scipy.sparse import issparse
 import statsmodels.stats.multitest as multi
 import statsmodels.api as sm
 
@@ -13,14 +20,15 @@ except ImportError:
     pass
 
 
-def read_in_files(Indir, ftable_loc):
+def read_in_files(Indir, ftable_loc, method = 'FeatureCount'):
     '''
     Read in STAR aligned files. 
     
     Input
     -----
-    Indir: STAR output folder path
-    ftable_loc: Gene feature table path
+    Indir: FeatureCount output folder path or HTSeqcount output file path
+    ftable_loc: Gene feature table path, ftable must have two columns with ['Gene Name', 'Gene Type']
+    method: Counting method, can be either 'FeatureCount' or 'HTSeqcount', default: FeatureCount
     
     Returns
     -----
@@ -28,27 +36,39 @@ def read_in_files(Indir, ftable_loc):
     
     '''
     
+    if method == 'FeatureCount':
     # first tidy up X
-    X = pd.read_csv(Indir+'/fcounts/fcounts.txt', delimiter='\t', index_col=0, skiprows=1)
-    GT = X.iloc[:-92,0:5].copy()
-    X = X.iloc[:,5:].transpose().copy()
-    X['obs_names'] = [re.search('(SLX-\d+\.\w\d+_\w\d+)', x).group(0) for x in X.index]
-    X = X.groupby('obs_names').sum()
-    ERCC = X.iloc[:,-92:].copy()
-    X = X.iloc[:,:-92].copy()
-    
-    # Then work on the QC
-    QC = pd.read_csv(Indir+'/fcounts/fcounts.txt.summary', delimiter='\t', index_col=0).transpose()
-    QC['obs_names'] = [re.search('(SLX-\d+\.\w\d+_\w\d+)', x).group(0) for x in QC.index]
-    QC = QC.groupby('obs_names').sum()
-    QC = QC.iloc[:,(np.sum(QC, axis=0)!=0).values].copy()
-    QC.columns = ['QC_'+x for x in QC.columns]
-    QC = QC[[x for x in QC.columns if 'Unassigned' in x]]
+        X = pd.read_csv(Indir+'/fcounts/fcounts.txt', delimiter='\t', index_col=0, skiprows=1)
+        GT = X.iloc[:-92,0:5].copy()
+        X = X.iloc[:,5:].transpose().copy()
+        X['obs_names'] = [re.search('(SLX-\d+\.\w\d+_\w\d+)', x).group(0) for x in X.index]
+        X = X.groupby('obs_names').sum()
+        ERCC = X.iloc[:,-92:].copy()
+        X = X.iloc[:,:-92].copy()
+
+        # Then work on the QC
+        QC = pd.read_csv(Indir+'/fcounts/fcounts.txt.summary', delimiter='\t', index_col=0).transpose()
+        QC['obs_names'] = [re.search('(SLX-\d+\.\w\d+_\w\d+)', x).group(0) for x in QC.index]
+        QC = QC.groupby('obs_names').sum()
+        QC = QC.iloc[:,(np.sum(QC, axis=0)!=0).values].copy()
+        QC.columns = ['QC_'+x for x in QC.columns]
+        QC = QC[[x for x in QC.columns if 'Unassigned' in x]]
+    elif method == 'HTSeqcount':
+        X = pd.read_csv(Indir, delimiter='\t', index_col=0).transpose()
+        ERCC = X.loc[:,['ERCC' in x for x in X.columns]].copy()
+        QC = X.loc[:,['__' in x for x in X.columns]].copy()
+        QC.columns = [x.replace('__','') for x in QC.columns]
+        QC.columns = ['QC_'+x for x in QC.columns]
+    else:
+        raise ValueError('method can only be either FeatureCount or HTSeqcount.')
     
     # Combine feature table
     ftable = pd.read_csv(ftable_loc, delimiter='\t', index_col=0, header=None)
     ftable.columns = ['Gene Name', 'Gene Type']
-    FeatureTable = pd.concat([ftable,GT], axis=1)
+    if method == 'FeatureCount':
+        FeatureTable = pd.concat([ftable,GT], axis=1)
+    else:
+        FeatureTable = ftable
     
     # New write in anndata frame
     adata = anndata.AnnData(X=X, var=FeatureTable, obs=QC)
@@ -217,13 +237,14 @@ def est_size_factor(x, method='ExpAllC'):
     sf = np.exp(np.median((np.log(x)-loggeomeans)[:,np.isfinite(loggeomeans)], axis=1))
     return sf
 
-def normalise_data(adata, copy=False):
+def normalise_data(adata, reCalSF=True, copy=False):
     '''
     Normalisation using size factors estimated by DESeq2 method
     
     Input
     -----
     adata: an anndata object
+    reCalSF: If recalculate the size factors, default: True, If False, 'sf_genes' and 'sf_ercc' in .obs will be used.
     copy: if copy anndata into new object, default: False
     
     Returns
@@ -233,15 +254,22 @@ def normalise_data(adata, copy=False):
     ERCC_norm is added in .obsm
     
     '''
-        
-    print('Calculate SF for genes:')
-    sf_genes = est_size_factor(adata.X)
-    print('Calculate SF for erccs:')
-    sf_ercc = est_size_factor(adata.obsm['ERCC'])
-    adata.obs['sf_gene'] = sf_genes
-    adata.obs['sf_ercc'] = sf_ercc
-    adata.X = np.log1p(adata.X/sf_genes[:,None])
-    adata.obsm['ERCC_norm'] = np.log1p(adata.obsm['ERCC']/sf_ercc[:,None])
+    
+    if reCalSF:
+        print('Calculate SF for genes:')
+        sf_genes = est_size_factor(adata.X)
+        adata.obs['sf_gene'] = sf_genes
+        if 'ERCC' in adata.obsm_keys():
+            print('Calculate SF for erccs:')
+            sf_ercc = est_size_factor(adata.obsm['ERCC'])
+            adata.obs['sf_ercc'] = sf_ercc
+    else:
+        if 'sf_gene' not in adata.obs_keys():
+            raise ValueError('sf_gene is not found in .obs, please set reCalSF=True.')
+    
+    adata.X = np.log1p(adata.X/adata.obs['sf_gene'][:,None])
+    if 'ERCC' in adata.obsm_keys():
+        adata.obsm['ERCC_norm'] = np.log1p(adata.obsm['ERCC']/adata.obs['sf_ercc'][:,None])
     if copy:
         return adata.copy()
     
@@ -271,11 +299,17 @@ def tech_var(adata, useERCC=True, cvThresh=.3, quant=.8, minBiolDisp=.5**2,
     .uns['varGenes']['ercc']: mean, cv2 for ERCCs
     '''
     
+    if 'sf_gene' not in adata.obs_keys():
+        print("sf_gene is not found, redoing normalisation")
+        normalise_data(adata)
+    
     data = np.exp(adata.X)-1
     aMean = np.mean(data, axis=0)
     aStd = np.std(data, axis=0)
     cv2a = (aStd/aMean)**2
     if useERCC:
+        if 'ERCC' not in adata.obsm_keys():
+            raise ValueError('ERCC does not exist, check data.')
         ercc_data = np.exp(adata.obsm['ERCC_norm'])-1
         sMean = np.mean(ercc_data, axis=0)
         sStd = np.std(ercc_data, axis=0)
@@ -285,6 +319,7 @@ def tech_var(adata, useERCC=True, cvThresh=.3, quant=.8, minBiolDisp=.5**2,
         cv2s = cv2a
     if meanForFit is None:
         meanForFit = np.quantile(sMean[cv2s>cvThresh], quant)
+    print('MeanForFit: ', str(meanForFit))
     useForFit = (sMean>=meanForFit)
     print(np.sum(useForFit))
     
@@ -297,16 +332,17 @@ def tech_var(adata, useERCC=True, cvThresh=.3, quant=.8, minBiolDisp=.5**2,
     a0 = fit.params[1]
     a1t = fit.params[0]
     df = data.shape[0]-1
-    xi = np.mean(1/adata.obs['sf_ercc'])
     m = data.shape[0]
+    xi = None
     
     if useERCC:
+        xi = np.mean(1/adata.obs['sf_ercc'])
         psi = xi + (a1t - xi)*np.mean(adata.obs['sf_ercc']/adata.obs['sf_gene'])
         cv2th = a0 + minBiolDisp + a0*minBiolDisp
         testDenom = (aMean*psi + cv2th*aMean**2)/(1+cv2th/m)
         pA = 1 - chi2.cdf((aStd**2)*df/testDenom, df=df)
     else:
-        psi = xi + (a1t - xi)
+        psi = a1t
         chi2_values = df * cv2s / (psi / sMean + a0)
         pA = 1 - chi2.cdf(chi2_values ,df=df)
     
@@ -378,6 +414,8 @@ def plot_tech_var(adata, s=10, save=None):
     plt.scatter(g_df.loc[~g_df['highVar'],:]['mean'], g_df.loc[~g_df['highVar'],:]['cv2'], color='grey', s=s)
     ax.set_yscale('log',basey=10)
     ax.set_xscale('log',basex=10)
+    ax.set_ylabel(r'$\sigma^{2}/\mu^{2}$')
+    ax.set_xlabel(r'$\mu$')
     ax.grid(False)
 
     plt.scatter(g_df.loc[g_df['highVar'],:]['mean'], g_df.loc[g_df['highVar'],:]['cv2'], color='red', s=s)
@@ -434,7 +472,9 @@ def plot_ma(adata, unsName='rank_genes_groups', cidx=0, Cells = None, save=False
     padj = pd.DataFrame(adata.uns[unsName]['pvals_adj']).iloc[:,cidx]
     adata_sub = adata_sub.raw[:, gnames].X
     print(adata_sub.shape)
-    normExp = np.mean(np.exp(adata_sub.toarray())-1, axis=0)
+    if issparse(adata_sub):
+        adata_sub = adata_sub.todense()
+    normExp = np.mean(np.exp(adata_sub)-1, axis=0)
     del adata_sub
 
     abs_logFC = logFC.copy()

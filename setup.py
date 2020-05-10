@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
 	name='smqpp',
-	version='0.0.2',
+	version='0.0.3',
 	description='Smartseq2 preprocessing toolkit',
 	url='https://github.com/SharonWang/smqpp',
 	packages=find_packages(exclude=['docs', 'figures', 'examples']),
