@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
+# In[1]:
 
 
 import numpy as np
@@ -19,6 +19,43 @@ try:
 except ImportError:
     pass
 
+def generate_feature_table(infile, outfile):
+    '''
+    Generate the feature table as input for read_in_files function
+    
+    Input
+    -----
+    infile: path to the gtf file that used for feature counting
+    outfile: path to the output feature table in .tsv format
+    
+    Returns
+    -----
+    A feature table.tsv file as the input for read_in_files function
+    
+    '''
+    
+    savef = {}
+    for line in open(infile):
+        if '#' in line:
+            continue
+        val = line.split('\t')
+        if val[2] == 'exon':
+            ensemblID = re.search(r'.*gene_id "([^"]+).*', val[8]).group(1)
+            if 'gene_name' not in val[8] or 'gene_biotype' not in val[8]:
+                GN = ensemblID
+                Type = 'Extra gene'
+            else:
+                GN = re.search(r'.*gene_name "([^"]+).*', val[8]).group(1)
+                Type = re.search(r'.*gene_biotype "([^"]+).*', val[8]).group(1)
+            savef[ensemblID] = [GN,Type]
+    savef = pd.DataFrame.from_dict(savef, orient='index')
+    savef.to_csv(outfile, index=True, header=False, sep='\t')
+
+def diff_list(list1, list2):
+    c = set(list1).union(set(list2))  
+    d = set(list1).intersection(set(list2)) 
+    return list(c - d)
+
 
 def read_in_files(Indir, ftable_loc, method = 'FeatureCount'):
     '''
@@ -27,7 +64,7 @@ def read_in_files(Indir, ftable_loc, method = 'FeatureCount'):
     Input
     -----
     Indir: FeatureCount output folder path or HTSeqcount output file path
-    ftable_loc: Gene feature table path, ftable must have two columns with ['Gene Name', 'Gene Type']
+    ftable_loc: Gene feature table path, ftable must have two columns with ['Gene Name', 'Gene Type'] with Ensembl ID as index
     method: Counting method, can be either 'FeatureCount' or 'HTSeqcount', default: FeatureCount
     
     Returns
@@ -39,12 +76,12 @@ def read_in_files(Indir, ftable_loc, method = 'FeatureCount'):
     if method == 'FeatureCount':
     # first tidy up X
         X = pd.read_csv(Indir+'/fcounts/fcounts.txt', delimiter='\t', index_col=0, skiprows=1)
-        GT = X.iloc[:-92,0:5].copy()
+        GT = X.iloc[['ERCC-' not in x for x in X.index],0:5].copy()
         X = X.iloc[:,5:].transpose().copy()
         X['obs_names'] = [re.search('(SLX-\d+\.\w\d+_\w\d+)', x).group(0) for x in X.index]
         X = X.groupby('obs_names').sum()
-        ERCC = X.iloc[:,-92:].copy()
-        X = X.iloc[:,:-92].copy()
+        ERCC = X.iloc[:,['ERCC-' in x for x in X.columns]].copy()
+        X = X.iloc[:,['ERCC-' not in x for x in X.columns]].copy()
 
         # Then work on the QC
         QC = pd.read_csv(Indir+'/fcounts/fcounts.txt.summary', delimiter='\t', index_col=0).transpose()
@@ -55,20 +92,28 @@ def read_in_files(Indir, ftable_loc, method = 'FeatureCount'):
         QC = QC[[x for x in QC.columns if 'Unassigned' in x]]
     elif method == 'HTSeqcount':
         X = pd.read_csv(Indir, delimiter='\t', index_col=0).transpose()
-        ERCC = X.loc[:,['ERCC' in x for x in X.columns]].copy()
-        QC = X.loc[:,['__' in x for x in X.columns]].copy()
+        ERCC = X.iloc[:,['ERCC-' in x for x in X.columns]].copy()
+        QC = X.iloc[:,['__' in x for x in X.columns]].copy()
         QC.columns = [x.replace('__','') for x in QC.columns]
         QC.columns = ['QC_'+x for x in QC.columns]
+        X = X.iloc[:,['ERCC-' not in x and '__' not in x for x in X.columns]].copy()
     else:
         raise ValueError('method can only be either FeatureCount or HTSeqcount.')
     
     # Combine feature table
     ftable = pd.read_csv(ftable_loc, delimiter='\t', index_col=0, header=None)
+    ftable = ftable.iloc[['ERCC-' not in x for x in ftable.index],:].copy()
+    difG = diff_list(list(X.columns), list(ftable.index))
+    if difG:
+        raise ValueError(f'Gene names in Feature table do not match the ones in count table. Different genes: {difG}')
     ftable.columns = ['Gene Name', 'Gene Type']
     if method == 'FeatureCount':
         FeatureTable = pd.concat([ftable,GT], axis=1)
     else:
         FeatureTable = ftable
+    FeatureTable = FeatureTable.loc[X.columns,:].copy()
+    print('Count table shape: '+str(X.shape))
+    print('Feature table shape:' + str(FeatureTable.shape))
     
     # New write in anndata frame
     adata = anndata.AnnData(X=X, var=FeatureTable, obs=QC)
@@ -78,7 +123,15 @@ def read_in_files(Indir, ftable_loc, method = 'FeatureCount'):
     adata.var_names_make_unique()
     return adata
 
-def smartseq_qc(adata, cutoff=[np.log10(2*(10**5)), 0, 0.2, 4000, 0.2, 0.2, float('nan'), float('nan'), float('nan'), float('nan')],
+cutoff = {}
+cutoff['nMapped (log10)'] = np.log10(2*(10**5))
+cutoff['nNuclear (log10)'] = 0
+cutoff['fGenes:nTotal'] = 0.2
+cutoff['nHCGenes'] = 4000
+cutoff['mito:nGenes'] = 0.2
+cutoff['nERCC:nMapped'] = 0.2
+
+def smartseq_qc(adata, cutoff=cutoff,
             MTpattern = 'mt-', ncols=4, figsize=(10,7), s=10, title=None, save=None):
     '''
     Do a bglab equivalent quality control.
@@ -100,8 +153,13 @@ def smartseq_qc(adata, cutoff=[np.log10(2*(10**5)), 0, 0.2, 4000, 0.2, 0.2, floa
     n_counts, n_genes and percent_mito added in .obs
     
     '''
-    
+    ## don't know why make_unique did not work sometimes, so do this again
+    adata.var_names_make_unique()
     mito_genes = [name for name in adata.var_names if name.startswith(MTpattern)]
+    if not mito_genes:
+        raise ValueError('Pls enter correct MTpattern')
+    else:
+        print('mito_genes: '+str(mito_genes))
     mitoCNT = np.sum(adata[:,mito_genes].X, axis=1).copy()
     nuclearCNT = np.sum(adata[:,~np.in1d(adata.var_names,mito_genes)].X, axis=1).copy()
     erccCNT = np.sum(adata.obsm['ERCC'], axis=1).values
@@ -110,27 +168,33 @@ def smartseq_qc(adata, cutoff=[np.log10(2*(10**5)), 0, 0.2, 4000, 0.2, 0.2, floa
     nTotal = mitoCNT + nuclearCNT + erccCNT + qcCNT
     nMapped = mitoCNT + nuclearCNT + erccCNT
     nGenes = mitoCNT + nuclearCNT
-    nHCGenes = np.sum(adata[:,~np.in1d(adata.var_names,mito_genes)].X.T*(10**6)/nuclearCNT > 10, axis=0)
+    nHCGenes = np.sum(adata[:,~np.in1d(adata.var_names,mito_genes)].X.T*(10**6)/(nuclearCNT+1) > 10, axis=0)
+
     QCdata = {}
-    QCdata['nMapped (log10)'] = np.log10(nMapped)
-    QCdata['nNuclear (log10)'] = np.log10(nuclearCNT)
-    QCdata['fGenes:nTotal'] = nGenes/nTotal
+    QCdata['nMapped (log10)'] = np.log10(nMapped+1)
+    QCdata['nNuclear (log10)'] = np.log10(nuclearCNT+1)
+    QCdata['fGenes:nTotal'] = nGenes/(nTotal+1)
     QCdata['nHCGenes'] = nHCGenes
-    QCdata['mito:nGenes'] = mitoCNT/nGenes
-    QCdata['nERCC:nMapped'] = erccCNT/nMapped
-    QCdata['nNuclear:nMapped'] = nuclearCNT/nMapped
+    QCdata['mito:nGenes'] = mitoCNT/(nGenes+1)
+    QCdata['nERCC:nMapped'] = erccCNT/(nMapped+1)
+    QCdata['nNuclear:nMapped'] = nuclearCNT/(nMapped+1)
     for qcIndex in qcNames:
-        QCdata[qcIndex.replace('_Unassigned', '')+':nTotal'] = adata.obs[qcIndex]/nTotal
+        QCdata[qcIndex.replace('_Unassigned', '')+':nTotal'] = adata.obs[qcIndex]/(nTotal+1)
     
     # cells failed QC
-    compara = ['<','<','<','<','>','>','<','>','>','>']
+    compara = {}
+    compara['nMapped (log10)'] = '<'
+    compara['nNuclear (log10)'] = '<'
+    compara['fGenes:nTotal'] = '<'
+    compara['nHCGenes'] = '<'
+    compara['mito:nGenes'] = '>'
+    compara['nERCC:nMapped'] = '>'
     failed = []
-    for i in range(len(QCdata.keys())):
-        if not np.isnan(cutoff[i]):
-            if compara[i] == '<':
-                failed.append(QCdata[list(QCdata.keys())[i]] < cutoff[i])
-            else:
-                failed.append(QCdata[list(QCdata.keys())[i]] > cutoff[i])
+    for k in cutoff.keys():
+        if compara[k] == '<':
+            failed.append(QCdata[k] < cutoff[k])
+        else:
+            failed.append(QCdata[k] > cutoff[k])
     failed = np.vstack(failed)
     failed_idx = np.sum(failed, axis=0)>0
     print('Number of passed cells: '+str(sum(np.sum(failed, axis=0)==0)))
@@ -145,8 +209,8 @@ def smartseq_qc(adata, cutoff=[np.log10(2*(10**5)), 0, 0.2, 4000, 0.2, 0.2, floa
         rowidx = np.floor(i/ncols).astype(int)
         ax[rowidx, colidx].scatter(nTotal, QCdata[list(QCdata.keys())[i]], s=s, color='black')
         ax[rowidx, colidx].scatter(nTotal[failed_idx], QCdata[list(QCdata.keys())[i]][failed_idx], s=s, color='red')
-        if not np.isnan(cutoff[i]):
-            ax[rowidx, colidx].axhline(y=cutoff[i], color='orange', linestyle='dashed')
+        if list(QCdata.keys())[i] in cutoff.keys():
+            ax[rowidx, colidx].axhline(y=cutoff[list(QCdata.keys())[i]], color='orange', linestyle='dashed')
         #ax[rowidx, colidx].set_yscale('log',basey=10)
         ax[rowidx, colidx].set_ylabel(list(QCdata.keys())[i])
         ax[rowidx, colidx].grid(False)
@@ -159,7 +223,7 @@ def smartseq_qc(adata, cutoff=[np.log10(2*(10**5)), 0, 0.2, 4000, 0.2, 0.2, floa
         plt.savefig(save)
         
     adata.obs['n_counts'] = nGenes
-    adata.obs['percent_mito'] = mitoCNT/nGenes
+    adata.obs['percent_mito'] = mitoCNT/(nGenes+1)
     adata.obs['n_genes'] = np.sum(adata.X > 0, axis=1)
     
     return adata[~failed_idx,:].copy()
@@ -185,6 +249,8 @@ def reformat_meta(meta):
         meta = meta.drop(meta.columns[[2,11,16,17]], axis=1)
     elif meta.shape[1] == 24:
         meta = meta.iloc[:,[0,1,2,3,4,5,6,9,7,8, 11, 10,21,22,17,16,15]]
+    else:
+        raise ValueError('To use this function, number of columns must be either 19, 21 or 24 depends versions on google drive.')
     #print(meta.columns)
     meta.columns = ['Gottgens_ID', 'Sequencing_identifier', 'Plate_number',
        'Position_in_96_well_plate_sorted', 'Position_in_96_well_plate_RNAseq',
@@ -420,19 +486,18 @@ def plot_tech_var(adata, s=10, save=None):
 
     plt.scatter(g_df.loc[g_df['highVar'],:]['mean'], g_df.loc[g_df['highVar'],:]['cv2'], color='red', s=s)
     
-    xlim = ax.get_xlim()
+    xlim = np.log10(ax.get_xlim())
     ylim = ax.get_ylim()
-    
-    xpred = np.linspace(start=ax.get_xlim()[0], stop=ax.get_xlim()[1], num=1000)
+    xpred = 10**(np.linspace(start=xlim[0], stop=xlim[1], num=1000))
     if useERCC:
         plt.scatter(e_df['mean'], e_df['cv2'], s=s, color='blue')
         y1 = a1t/xpred + a0
         y2 = psi/xpred + a0 + minBiolDisp
-        plt.plot(xpred[y1<=ylim[1]], y1[y1<=ylim[1]], color='red')
-        plt.plot(xpred[y1<=ylim[1]], y2[y1<=ylim[1]], color='red', linestyle='dashed')
+        plt.plot(xpred[y1<ylim[1]], y1[y1<ylim[1]], color='red')
+        plt.plot(xpred[y2<ylim[1]], y2[y2<ylim[1]], color='red', linestyle='dashed')
     else:
         y1 = psi/xpred + a0
-        plt.plot(xpred[y1<=ylim[1]], y1[y1<=ylim[1]], color='red', linestyle='dashed')
+        plt.plot(xpred[y1<ylim[1]], y1[y1<ylim[1]], color='red', linestyle='dashed')
     
     if save is not None:
         plt.savefig(save)
