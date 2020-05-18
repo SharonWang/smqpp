@@ -19,6 +19,8 @@ try:
 except ImportError:
     pass
 
+
+############# BELOW is data formating and readin #####################
 def generate_feature_table(infile, outfile):
     '''
     Generate the feature table as input for read_in_files function
@@ -51,6 +53,41 @@ def generate_feature_table(infile, outfile):
     savef = pd.DataFrame.from_dict(savef, orient='index')
     savef.to_csv(outfile, index=True, header=False, sep='\t')
 
+    
+def reformat_meta(meta):
+    '''
+    Reformat metatable downloaded from google drive.
+    This should be compatible with different versions of metadata spreadsheet.
+    
+    Input
+    -----
+    meta: metatable downloaded from google drive excel spreadsheet
+    
+    Returns
+    -----
+    Reformatted metatable
+    
+    '''
+    
+    if meta.shape[1] == 19:
+        meta = meta.drop(meta.columns[[2,15]], axis=1)
+    elif meta.shape[1] ==21:
+        meta = meta.drop(meta.columns[[2,11,16,17]], axis=1)
+    elif meta.shape[1] == 24:
+        meta = meta.iloc[:,[0,1,2,3,4,5,6,9,7,8, 11, 10,21,22,17,16,15]]
+    else:
+        raise ValueError('To use this function, number of columns must be either 19, 21 or 24 depends versions on google drive.')
+    #print(meta.columns)
+    meta.columns = ['Gottgens_ID', 'Sequencing_identifier', 'Plate_number',
+       'Position_in_96_well_plate_sorted', 'Position_in_96_well_plate_RNAseq',
+       'FACs', 'Unique_sample_descriptor', 'Details', 'Cell_type_general',
+       'Cell_type_subtype', 'Owner', 'Species', 'Sequencing_index',
+       'Sequencing_facility_index', 'Average_pooled_library_length_bp', 'Pool_size',
+       'Number_of_lanes']
+    #print(meta.columns)
+    return(meta)
+
+    
 def diff_list(list1, list2):
     c = set(list1).union(set(list2))  
     d = set(list1).intersection(set(list2)) 
@@ -123,6 +160,8 @@ def read_in_files(Indir, ftable_loc, method = 'FeatureCount'):
     adata.var_names_make_unique()
     return adata
 
+
+############## BELOW is QC #########################
 cutoff = {}
 cutoff['nMapped (log10)'] = np.log10(2*(10**5))
 cutoff['nNuclear (log10)'] = 0
@@ -162,9 +201,15 @@ def smartseq_qc(adata, cutoff=cutoff,
         print('mito_genes: '+str(mito_genes))
     mitoCNT = np.sum(adata[:,mito_genes].X, axis=1).copy()
     nuclearCNT = np.sum(adata[:,~np.in1d(adata.var_names,mito_genes)].X, axis=1).copy()
-    erccCNT = np.sum(adata.obsm['ERCC'], axis=1).values
+    if 'ERCC' not in adata.obsm_keys():
+        erccCNT = np.zeros(adata.shape[0])
+    else:
+        erccCNT = np.sum(adata.obsm['ERCC'], axis=1).values
     qcNames = [x for x in adata.obs_keys() if 'QC' in x]
-    qcCNT = np.sum(adata.obs[qcNames], axis=1).values
+    if not qcNames:
+        qcCNT = np.zeros(adata.shape[0])
+    else:
+        qcCNT = np.sum(adata.obs[qcNames], axis=1).values
     nTotal = mitoCNT + nuclearCNT + erccCNT + qcCNT
     nMapped = mitoCNT + nuclearCNT + erccCNT
     nGenes = mitoCNT + nuclearCNT
@@ -228,39 +273,8 @@ def smartseq_qc(adata, cutoff=cutoff,
     
     return adata[~failed_idx,:].copy()
 
-def reformat_meta(meta):
-    '''
-    Reformat metatable downloaded from google drive.
-    This should be compatible with different versions of metadata spreadsheet.
-    
-    Input
-    -----
-    meta: metatable downloaded from google drive excel spreadsheet
-    
-    Returns
-    -----
-    Reformatted metatable
-    
-    '''
-    
-    if meta.shape[1] == 19:
-        meta = meta.drop(meta.columns[[2,15]], axis=1)
-    elif meta.shape[1] ==21:
-        meta = meta.drop(meta.columns[[2,11,16,17]], axis=1)
-    elif meta.shape[1] == 24:
-        meta = meta.iloc[:,[0,1,2,3,4,5,6,9,7,8, 11, 10,21,22,17,16,15]]
-    else:
-        raise ValueError('To use this function, number of columns must be either 19, 21 or 24 depends versions on google drive.')
-    #print(meta.columns)
-    meta.columns = ['Gottgens_ID', 'Sequencing_identifier', 'Plate_number',
-       'Position_in_96_well_plate_sorted', 'Position_in_96_well_plate_RNAseq',
-       'FACs', 'Unique_sample_descriptor', 'Details', 'Cell_type_general',
-       'Cell_type_subtype', 'Owner', 'Species', 'Sequencing_index',
-       'Sequencing_facility_index', 'Average_pooled_library_length_bp', 'Pool_size',
-       'Number_of_lanes']
-    #print(meta.columns)
-    return(meta)
 
+############## BELOW is DESeq2 normalisation ######
 def fexp_genes(x):
     '''
     Get genes expressed in all cells
@@ -303,13 +317,14 @@ def est_size_factor(x, method='ExpAllC'):
     sf = np.exp(np.median((np.log(x)-loggeomeans)[:,np.isfinite(loggeomeans)], axis=1))
     return sf
 
-def normalise_data(adata, reCalSF=True, copy=False):
+def normalise_data(adata, reCalSF=True, method='ExpAllC', copy=False):
     '''
     Normalisation using size factors estimated by DESeq2 method
     
     Input
     -----
     adata: an anndata object
+    method: ['ExpAllC', 'Exp'], ExpAllC - Get genes expressed in all cells, Exp - Get genes expressed at least in 1 cell. Default: ExpAllC
     reCalSF: If recalculate the size factors, default: True, If False, 'sf_genes' and 'sf_ercc' in .obs will be used.
     copy: if copy anndata into new object, default: False
     
@@ -323,11 +338,11 @@ def normalise_data(adata, reCalSF=True, copy=False):
     
     if reCalSF:
         print('Calculate SF for genes:')
-        sf_genes = est_size_factor(adata.X)
+        sf_genes = est_size_factor(adata.X, method=method)
         adata.obs['sf_gene'] = sf_genes
         if 'ERCC' in adata.obsm_keys():
             print('Calculate SF for erccs:')
-            sf_ercc = est_size_factor(adata.obsm['ERCC'])
+            sf_ercc = est_size_factor(adata.obsm['ERCC'], method=method)
             adata.obs['sf_ercc'] = sf_ercc
     else:
         if 'sf_gene' not in adata.obs_keys():
@@ -338,8 +353,94 @@ def normalise_data(adata, reCalSF=True, copy=False):
         adata.obsm['ERCC_norm'] = np.log1p(adata.obsm['ERCC']/adata.obs['sf_ercc'][:,None])
     if copy:
         return adata.copy()
-    
 
+############## BELOW is Quantile normalisation ########
+from scipy.stats import rankdata
+def quantile_norm(X):
+    '''
+    Quantile normalisation
+    
+    Input
+    -----
+    X: adata.X, [cells, genes]
+
+    Returns
+    -----
+    Normalised counts, can be inserted back to adata.X
+    
+    '''
+    
+    quantiles = np.mean(np.sort(X, axis=1), axis=0)
+    ranks_min = np.apply_along_axis(rankdata, 1, X, 'min')
+    rank_min_indices = ranks_min.astype(int)-1
+    ranks_max = np.apply_along_axis(rankdata, 1, X, 'max')
+    rank_max_indices = ranks_max.astype(int)-1
+    Xn_min = quantiles[rank_min_indices]
+    Xn_max = quantiles[rank_max_indices]
+    Xn = (Xn_min+Xn_max)/2
+    Xn[X==0] = 0
+    return(Xn)
+
+def quantile_norm_log(X):
+    '''
+    Log quantile normalisation
+    
+    Input
+    -----
+    X: adata.X, [cells, genes]
+
+    Returns
+    -----
+    Normalised counts in log scale, can be inserted back to adata.X
+    
+    '''
+        
+    logX = np.log1p(X)
+    logXn = quantile_norm(logX)
+    return(logXn)
+
+############## BELOW is downsampling normalisation #####
+def downsampling(X, min_lib_size, seed=0):
+    '''
+    Downsampling normlisation for each cell, randomly generate a number using binomial distribution,
+    with probability equal to the specific capture efficiency.
+    
+    Input
+    -----
+    X: raw UMI counts for each cell
+    min_lib_size: minimum library size among all cells
+    seed: random seed, default: 0
+    
+    Returns
+    -----
+    Normalised counts for each cell
+    
+    '''
+        
+    np.random.seed(seed=seed)
+    prob = min_lib_size/np.sum(X)
+    return(np.array([np.random.binomial(x, prob, 1) for x in X]).flatten())
+
+def downsampling_norm(X, seed=0):
+    '''
+    Downsampling normlisation for each cell, randomly generate a number using binomial distribution,
+    with probability equal to the specific capture efficiency.
+    
+    Input
+    -----
+    X: adata.X, [cells, genes]
+    seed: random seed, default: 0
+    
+    Returns
+    -----
+    Normalised counts, can be inserted back to adata.X
+    
+    '''
+        
+    min_lib_size = np.min(np.sum(X, axis=1))
+    return(np.apply_along_axis(downsampling, 1, X, min_lib_size, seed))
+
+############## Below is HVG selection ##################
 def tech_var(adata, useERCC=True, cvThresh=.3, quant=.8, minBiolDisp=.5**2, 
            fdr=.1, meanForFit=None, copy=False):
     '''
@@ -501,7 +602,54 @@ def plot_tech_var(adata, s=10, save=None):
     
     if save is not None:
         plt.savefig(save)
+
+def detect_outlier_cells(adata, aMeanQ = 0.95, cv2aQ = 0.8, outQ = 0.8, s=10):
+    '''
+    Outlier cell detection
+    
+    Input
+    -----
+    adata: an anndata object
+    aMeanQ: Quantile of mu value (x axis) to select. Default: 0.95
+    cv2aQ: Quantile of cv2a value (y axis) to select. Default: 0.8
+    outQ: percentage of selected genes to be consider as outlier. Default: 0.8
+    s: point size. Default: 10
+    
+    Returns
+    -----
+    MA plot
+    up-regulated gene list, down-regulated gene list, full DE table
+    
+    '''
+    if 'varGenes' not in adata.uns_keys():
+        raise ValueError('Please first do highly variable genes selection using tech_var function')
+    
+    aMean = adata.uns['varGenes']['genes']['mean']
+    cv2a = adata.uns['varGenes']['genes']['cv2']
+    idx = (aMean > np.quantile(aMean, aMeanQ)) & (cv2a > np.quantile(cv2a, cv2aQ))
+    GL = CBdata.var_names[idx]
+    print('Number of selected Genes: ' + str(len(GL)))
+    
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    plt.scatter(aMean, cv2a, color='grey', s=s)
+    ax.set_yscale('log',basey=10)
+    ax.set_xscale('log',basex=10)
+    ax.set_ylabel(r'$\sigma^{2}/\mu^{2}$')
+    ax.set_xlabel(r'$\mu$')
+    ax.grid(False)
+    plt.scatter(aMean[idx], cv2a[idx], color='red', s=s)
+    
+    GLData = adata[:,GL].X.copy()
+    gmean = np.mean(GLData, axis = 0)
+    gstd = np.std(GLData, axis = 0)
+    outlierC = adata.obs_names[np.sum(GLData > gmean+gstd, axis=1) > len(GL)*0.8].values
+    print('Number of outlier cell: '+ str(len(outlierC)))
+    print('Outlier cells: '+ str(outlierC))
+    return outlierC
         
+        
+########## BELOW is for DE analysis #####################
 def plot_ma(adata, unsName='rank_genes_groups', cidx=0, Cells = None, save=False, padj_cutoff=0.05, logFC_cutoff=1, 
             exp_cutoff=-6, s=1):
     '''
@@ -569,4 +717,214 @@ def plot_ma(adata, unsName='rank_genes_groups', cidx=0, Cells = None, save=False
     
     Ftable = pd.DataFrame(np.column_stack([gnames, logExp, logFC, pvals, padj]), columns=['GN','logMeanExp', 'logFC', 'pvals', 'padj'])
     return gnames[upidx], gnames[downidx], Ftable
+
+
+###### BELOW is for pseudotime analysis ##################
+import patsy
+import numpy as np
+from scipy.stats import chi2
+import statsmodels.api as sm
+import statsmodels.stats.multitest as multi
+from scipy.signal import gaussian
+
+def ns(pt, df=3):
+    '''
+    Fitting the gene expression to a smooth, nonlinear function of pseudotime with natural spline 
+    
+    Input
+    -----
+    pt: pseudotime
+    df: degree of freedom, default: 3
+    
+    Returns
+    -----
+    Natural spline fit
+    
+    '''
+    
+    return patsy.dmatrix('cr(x, df=3) -  1', {'x': pt})
+
+def likelihood_ratio_test(X_alt, y, X_null=None):
+    '''
+    Computer likelihood ratio test between two models: full model and the reduced model
+    if X_null is None: the reduced model will be only trained on the intercept. Note that
+    reduced model must be a subset of full model -- it can not contain features that are 
+    not in full model.
+    
+    Input
+    -----
+    X_alt: full model design matrix
+    y: expression values for each gene
+    X_null: reduced model design matrix
+    
+    Returns
+    -----
+    p-value, which can be used to accept or reject the null hypothesis
+    
+    '''
+    
+    y = np.array(y)
+    X_alt = np.array(X_alt)
+    X_alt = sm.add_constant(X_alt)
+    
+    if X_null is not None:
+        X_null = np.array(X_null)
+        X_null = sm.add_constant(X_null)
+        
+        if X_null.shape[1] >= X_alt.shape[1]:
+            raise ValueError("Alternate features must have more features than null features")
+        
+        df = X_alt.shape[1] - X_null.shape[1]
+    else:
+        X_null = np.repeat(1,X_alt.shape[0])
+        df = X_alt.shape[1]
+    
+    fit_alt = sm.OLS(y, X_alt).fit()
+    fit_null = sm.OLS(y, X_null).fit()
+    
+    llf_alt = fit_alt.llf
+    llf_null = fit_null.llf
+
+    G = 2 * (llf_alt - llf_null)
+    p_value = chi2.sf(G, df)
+
+    return p_value
+
+def GeneExp_LLR_test(adata, alt_obs, useHVG=True, null_obs=None, ns_df=3):
+    '''
+    Perform likelihood ratio test to detect genes that are differential expression along
+    pseudotime. In order to do this, dpt_pseudotime must be in the .obs. 
+    
+    This can also be applied for general model comparison if dpt_pseudotime does not exist.
+    
+    Please NOTE that, the input .raw must be log and normalised expression values as the assumption
+    is that the log norm exp should follow guassian distribution. If the raw counts are applied, this
+    model cannot be used and more complicated generalised linear models should be used for fitting.
+    
+    Input
+    -----
+    adata: adata object
+    alt_obs: .obs terms that will be considered in the full model, dpt_pseudotime must be in .obs to test for DE along PT 
+    useHVG: only use highly variable gene (HVG), default: True
+    null_obs: .obs terms that will be considered in the reduced model
+    ns_df: degree of freedom for smoothing the PT, default: 3
+    
+    Returns
+    -----
+    Gene table with p values (pval) and adjusted p values (padj)
+    
+    '''
+    
+    if useHVG:
+        yall = adata.raw[:,adata.var_names].X
+        GN = adata.var_names
+    else:
+        yall = adata.raw.X
+        GN = adata.raw.var_names
+    Ngenes = yall.shape[1]
+    Ncells = yall.shape[0]
+    alt_obs = np.array(alt_obs)
+    null_obs = np.array(null_obs)
+    if 'dpt_pseudotime' in alt_obs:
+        pt_design = ns(adata.obs['dpt_pseudotime'], df=ns_df)
+        if len(alt_obs) > 1:
+            alt_obs = alt_obs[alt_obs != 'dpt_pseudotime']
+            Naltobs = len(alt_obs)
+            alt_obs = adata.obs[alt_obs].to_numpy()
+            alt_obs = alt_obs.reshape(Ncells, Naltobs)
+            alt_obs = np.concatenate((alt_obs, pt_design), axis=1)
+        else:
+            alt_obs = pt_design
+    else:
+        alt_obs = adata.obs[alt_obs].to_numpy()
+    alt_obs = alt_obs.astype(float)
+    
+    if null_obs is not None:
+        if 'dpt_pseudotime' in null_obs:
+            pt_design = ns(adata.obs['dpt_pseudotime'], df=ns_df)
+            if len(null_obs) > 1:
+                null_obs = null_obs[null_obs != 'dpt_pseudotime']
+                Nnullobs = len(null_obs)
+                null_obs = adata.obs[null_obs].to_numpy()
+                null_obs = null_obs.astype(float)
+                null_obs = null_obs.reshape(Ncells, len(Nnullobs))
+                null_obs = np.concatenate((null_obs, pt_design), axis=1)
+            else:
+                null_obs = pt_design
+        else:
+            null_obs = adata.obs[null_obs].to_numpy()
+    null_obs = null_obs.astype(float)
+    
+    pval_all = np.array([])
+    for col_idx in range(Ngenes):
+        pval = likelihood_ratio_test(X_alt=alt_obs, y=yall[:,col_idx], X_null=null_obs)
+        pval_all = np.append(pval_all, pval)
+    pval_all[np.isnan(pval_all)] = 1
+    _, padj, _, _ = multi.multipletests(pval_all, method='fdr_bh')
+    results = pd.DataFrame(data=np.concatenate((pval_all.reshape(Ngenes,1), padj.reshape(Ngenes,1)), axis=1), index=GN, columns=['pval', 'padj'])
+    results = results.iloc[np.argsort(results['padj']),:]
+    return results
+
+def smoothing_fun(x, w=0.1, sigma=20):
+    '''
+    Apply Guassian window for smoothing
+    
+    Input
+    -----
+    x: an array of values
+    w: percentage of length of x as the number of points in the output window, M=w*len(x), default: 0.1
+    sigma: the standard deviation, default: 20
+    
+    Returns
+    -----
+    Smoothed values
+    
+    '''
+        
+    window = gaussian(np.floor(w*len(x)), sigma)
+    smoothed = np.convolve(x, window / window.sum(), mode='same')
+    return smoothed
+
+def plot_genes_along_pt(adata, genes, pt_obs='dpt_pseudotime', figsize=(6,4), smooth=True, save=None, **kwargs):
+    '''
+    General plotting function for genes along pseudotime
+    
+    Input
+    -----
+    adata: adata obj
+    genes: genes to plot
+    pt_obs: PT .obs key
+    figsize: size of figure, default: (6,4)
+    smooth: if smooth using gaussian window, default: True
+    save: name for saving the plot, default: None
+    **kwargs: other parameters in the smoothing function
+    
+    Returns
+    -----
+    A general plot with (smoothed) gene expression pattern along PT
+    
+    '''
+        
+    pt = adata.obs[pt_obs].values
+    pt_idx = np.argsort(pt)
+    pt = pt[pt_idx]
+    difG = np.setdiff1d(genes, adata.raw.var_names)
+    if len(difG) != 0:
+        raise ValueError(f'Genes: {difG} do not exist in adata.raw.')
+    
+    plt.figure(figsize=figsize)
+    for g in genes: 
+        gExp = adata.raw[pt_idx, g].X.flatten()
+        if smooth:
+            gExp = smoothing_fun(gExp, **kwargs)
+        gExp = (gExp-np.min(gExp))/(np.max(gExp)-np.min(gExp))
+        plt.plot(pt, gExp, label=g)
+    plt.grid(False)
+    plt.xlabel('diffusion pseudotime')
+    plt.yticks([0,1], ('min', 'max'))
+    plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+    plt.show()
+    
+    if save is not None:
+        plt.savefig(save)
 
