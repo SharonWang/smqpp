@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[5]:
 
 
 import numpy as np
@@ -362,7 +362,7 @@ def quantile_norm(X):
     
     Input
     -----
-    X: adata.X, [cells, genes]
+    X: adata.X, [cells, genes]. Note if adata.X is a sparse matrix, please first do X = adata.X.toarray()
 
     Returns
     -----
@@ -387,7 +387,7 @@ def quantile_norm_log(X):
     
     Input
     -----
-    X: adata.X, [cells, genes]
+    X: adata.X, [cells, genes]. Note if adata.X is a sparse matrix, please first do X = adata.X.toarray()
 
     Returns
     -----
@@ -407,7 +407,7 @@ def downsampling(X, min_lib_size, seed=0):
     
     Input
     -----
-    X: raw UMI counts for each cell
+    X: raw UMI counts for each cell. Note if adata.X is a sparse matrix, please first do X = adata.X.toarray()
     min_lib_size: minimum library size among all cells
     seed: random seed, default: 0
     
@@ -428,7 +428,7 @@ def downsampling_norm(X, seed=0):
     
     Input
     -----
-    X: adata.X, [cells, genes]
+    X: adata.X, [cells, genes]. Note if adata.X is a sparse matrix, please first do X = adata.X.toarray()
     seed: random seed, default: 0
     
     Returns
@@ -927,4 +927,215 @@ def plot_genes_along_pt(adata, genes, pt_obs='dpt_pseudotime', figsize=(6,4), sm
     
     if save is not None:
         plt.savefig(save)
+        
+######## BELOW is for projection #########################
+## quick neighbours detection for dpt PT calculation ##
+from scipy.sparse import coo_matrix
+from umap.umap_ import fuzzy_simplicial_set
+from sklearn.metrics import pairwise_distances
+def _get_sparse_matrix_from_indices_distances_umap(knn_indices, knn_dists, n_obs, n_neighbors):
+    '''
+    This code is copied from scanpy!!!
+    '''
+    
+    rows = np.zeros((n_obs * n_neighbors), dtype=np.int64)
+    cols = np.zeros((n_obs * n_neighbors), dtype=np.int64)
+    vals = np.zeros((n_obs * n_neighbors), dtype=np.float64)
+
+    for i in range(knn_indices.shape[0]):
+        for j in range(n_neighbors):
+            if knn_indices[i, j] == -1:
+                continue  # We didn't get the full knn for i
+            if knn_indices[i, j] == i:
+                val = 0.0
+            else:
+                val = knn_dists[i, j]
+
+            rows[i * n_neighbors + j] = i
+            cols[i * n_neighbors + j] = knn_indices[i, j]
+            vals[i * n_neighbors + j] = val
+
+    result = coo_matrix((vals, (rows, cols)),
+                                      shape=(n_obs, n_obs))
+    result.eliminate_zeros()
+    return result.tocsr()
+
+def compute_connectivities_umap(
+    knn_indices, knn_dists,
+    n_obs, n_neighbors, set_op_mix_ratio=1.0,
+    local_connectivity=1.0,
+):
+
+    """    This code is copied from scanpy!!!
+    
+    This is from umap.fuzzy_simplicial_set [McInnes18]_.
+    Given a set of data X, a neighborhood size, and a measure of distance
+    compute the fuzzy simplicial set (here represented as a fuzzy graph in
+    the form of a sparse matrix) associated to the data. This is done by
+    locally approximating geodesic distance at each point, creating a fuzzy
+    simplicial set for each such point, and then combining all the local
+    fuzzy simplicial sets into a global one via a fuzzy union.
+    """
+
+    X = coo_matrix(([], ([], [])), shape=(n_obs, 1))
+    connectivities = fuzzy_simplicial_set(
+        X,
+        n_neighbors,
+        None,
+        None,
+        knn_indices=knn_indices,
+        knn_dists=knn_dists,
+        set_op_mix_ratio=set_op_mix_ratio,
+        local_connectivity=local_connectivity,
+    )
+
+    if isinstance(connectivities, tuple):
+        # In umap-learn 0.4, this returns (result, sigmas, rhos)
+        connectivities = connectivities[0]
+
+    distances = _get_sparse_matrix_from_indices_distances_umap(
+        knn_indices, knn_dists, n_obs, n_neighbors
+    )
+
+    return distances, connectivities.tocsr()
+
+
+def quick_neighbors(comb, metric='euclidean', n_neighbors = 10, random_state = 0):
+    '''
+    A quick neighbours calculation between reference data and the new data.
+    If reference data/new data has batch effect, it needs to be firstly
+    corrected using fastMNN, which does correction based on the PCA space.
+    The corrected PCA will be used for neighbours calculation.
+    
+    Assumptions:
+    1) Cells from ref data will only be connected to each other
+    2) Cells from new data will only be connected to Cells from ref data
+    
+    This function generates the same output as sc.pp.neighbors function in scanpy.
+    
+    Input
+    -----
+    comb: combined adata obj. done by adata_ref.concatenate(adata_new), adata_ref must always be at the front
+    metric: method for distance calculation, for details, please see scanpy sc.pp.neighbors function, default: 'euclidean'
+    n_neighbors: number of neighbours to consider, default: 10
+    random_state: random seed, default: 0
+    
+    Returns
+    -----
+    comb.uns['neighbors'] same as outputs from sc.pp.neighbors
+    
+    '''
+    
+    if 'X_pca' not in comb.obsm_keys():
+        raise ValueError('PCA needs to be calculated and combined first')
+    X = comb.obsm['X_pca']
+    D = pairwise_distances(X, metric=metric)
+    nCell_total = X.shape[0]
+    nCell_ref = sum(comb.obs['batch'] == '0')
+    nCell_new = sum(comb.obs['batch'] == '1')
+    
+    sample_range = np.arange(nCell_total)[:, None]
+    knn_indices = np.argpartition(D[:,0:nCell_ref], n_neighbors-1, axis=1)[:, :n_neighbors]
+    knn_indices = knn_indices[sample_range, np.argsort(D[sample_range, knn_indices])]
+    knn_dists = D[sample_range, knn_indices]
+    distances, connectivities=compute_connectivities_umap(knn_indices, knn_dists, nCell_total, n_neighbors)
+
+    comb.uns['neighbors'] = {}
+    comb.uns['neighbors']['params'] = {'n_neighbors': n_neighbors, 'method': 'umap'}
+    comb.uns['neighbors']['connectivities'] = connectivities
+    comb.uns['neighbors']['distances'] = distances
+    
+## quick calculation of umap and umap projection ######
+import umap
+def quick_umap(adata_ref, n_neighbors=10, min_dist: float = 0.5, 
+              n_components: int = 2, alpha: float = 1.0, a = None, b=None,
+               negative_sample_rate: int = 5, init_coords = 'spectral', 
+               random_state = 0, **kwargs
+              ):
+    
+    '''
+    Calculate a UMAP for the reference data using the umap python package.
+    
+    Not using sc.tl.umap is due to umap model needs to be saved first as output.
+    
+    Most of the default parameters are from scanpy sc.tl.umap function.
+    
+    Input
+    -----
+    adata_ref: reference anndata object, needs to have 'X_pca' in .obsm and 'neighbors' in .uns
+    n_neighbors: Number of neighbors to be considered, default: 10
+    min_dist: The effective minimum distance between embedded points, default: 0.5
+    n_components: The number of dimensions of the embedding, default: 2 
+    alpha: The initial learning rate for the embedding optimization, default: 1.0
+    a: More specific parameters controlling the embedding. If `None` these
+        values are set automatically as determined by `min_dist` and
+        `spread`. Default: None
+    b: More specific parameters controlling the embedding. If `None` these
+        values are set automatically as determined by `min_dist` and
+        `spread`. Default: None
+    negative_sample_rate: The number of negative edge/1-simplex samples to use per positive
+        edge/1-simplex sample in optimizing the low dimensional embedding. Default: 5
+    int_coords: How to initialize the low dimensional embedding. Called `init` in the
+        original UMAP. Default: 'spectral'
+    random_stat: random seed, default: 0
+    **kwargs: other parameters taken in the umap.umap_.UMAP function
+    
+    Returns
+    -----
+    A umap model
+    The calculate umap coordicates for ref data is saved in data_ref.obsm['X_umap']
+    
+    '''
+    if 'X_pca' not in adata_ref.obsm_keys():
+        raise ValueError('Need to calculate PCA first')
+    
+    if 'neighbors' not in adata_ref.uns_keys():
+        raise ValueError('Need to calcualte neighbors first')
+    
+    if a is None or b is None:
+        a, b = umap.umap_.find_ab_params(spread, min_dist)
+    neighbors = adata_ref.uns['neighbors']
+    neigh_params = neighbors['params']
+    umap_ref = umap.umap_.UMAP(
+        n_neighbors = n_neighbors,
+        n_components = n_components,
+        learning_rate = alpha,
+        a = a,
+        b = b,
+        negative_sample_rate = negative_sample_rate,
+        init = init_coords,
+        random_state = random_state,
+        output_metric = neigh_params.get('metric', 'euclidean'),
+        output_metric_kwds = neigh_params.get('metric_kwds', {}),
+        **kwargs
+    )
+    X = adata_ref.obsm['X_pca']
+    X_contiguous = np.ascontiguousarray(X, dtype=np.float32)
+    X_umap_fit = umap_ref.fit(X_contiguous)
+    X_umap = X_umap_fit.embedding_
+    adata_ref.obsm['X_umap'] = X_umap
+    return umap_ref
+
+def quick_umap_proj(adata_new, umap_ref):
+    '''
+    Project new data onto the existing reference data umap based on pca space
+    
+    Input
+    -----
+    adata_new: new anndata object, needs to have 'X_pca' in .obsm
+    umap_ref: umap model as the output of the 'quick_umap' function
+    
+    Returns
+    -----
+    Projected umap coordicates of the new data
+    
+    '''
+    
+    if 'X_pca' not in adata_new.obsm_keys():
+        raise ValueError('Need to calculate PCA first')
+    
+    X1 = adata_new.obsm['X_pca']
+    X1_contiguous = np.ascontiguousarray(X1, dtype=np.float32)
+    X1_umap = umap_ref.transform(X1_contiguous)
+    return X1_umap
 
