@@ -1047,7 +1047,7 @@ def quick_neighbors(comb, metric='euclidean', n_neighbors = 10, random_state = 0
     
 ## quick calculation of umap and umap projection ######
 import umap
-def quick_umap(adata_ref, n_neighbors=10, min_dist: float = 0.5, 
+def quick_umap(adata_ref, n_neighbors=10, min_dist: float = 0.5, spread: float = 1.0,
               n_components: int = 2, alpha: float = 1.0, a = None, b=None,
                negative_sample_rate: int = 5, init_coords = 'spectral', 
                random_state = 0, **kwargs
@@ -1065,6 +1065,8 @@ def quick_umap(adata_ref, n_neighbors=10, min_dist: float = 0.5,
     adata_ref: reference anndata object, needs to have 'X_pca' in .obsm and 'neighbors' in .uns
     n_neighbors: Number of neighbors to be considered, default: 10
     min_dist: The effective minimum distance between embedded points, default: 0.5
+    spread: The effective scale of embedded points. In combination with `min_dist`
+        this determines how clustered/clumped the embedded points are. Default: 1.0
     n_components: The number of dimensions of the embedding, default: 2 
     alpha: The initial learning rate for the embedding optimization, default: 1.0
     a: More specific parameters controlling the embedding. If `None` these
