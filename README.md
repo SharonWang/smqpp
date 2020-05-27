@@ -21,13 +21,13 @@ The package contains the following steps:
 2. **<ins>Differential expression analysis</ins>**
 	- **plot_ma**: MAplot for rank_genes_group from [Scanpy](https://github.com/theislab/scanpy) and select significant genes with high confidence
 
-3. **<ins>Pseudotime time analysisv
+3. **<ins>Pseudotime time analysis</ins>**
 	- **GeneExp_LLR_test**: Likelihood ratio test to select genes that differentially expressed along pseudotime. Linear models were fitted between log norm exp and smoothed PT by applying natural spline.
 	- **plot_genes_along_pt**: Plotting out gene expression pattern along PT. Gene exp was smoothed using Guassian filter.
 
 4. **<ins>Projection</ins>**
 	- **quick_neighbors**: Neighbors calculation adpoted from [scanpy](https://github.com/theislab/scanpy). Two constraints applied: 1) reference cells only allow neighbors between themselves; 2) new cells only allow neighbors with reference cells
-	- q**uick_umap**: Similar to the ingest function in [scanpy](https://github.com/theislab/scanpy). Umap was calculated using [umap](https://github.com/lmcinnes/umap) python package. Parameters used as [scanpy](https://github.com/theislab/scanpy) defaults.
+	- **quick_umap**: Similar to the ingest function in [scanpy](https://github.com/theislab/scanpy). Umap was calculated using [umap](https://github.com/lmcinnes/umap) python package. Parameters used as [scanpy](https://github.com/theislab/scanpy) defaults.
 	- **quick_umap_proj**: Projection of new data onto reference data
 
 ## Installation
