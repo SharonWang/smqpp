@@ -13,12 +13,14 @@ from scipy.stats import chi2
 from scipy.sparse import issparse
 import statsmodels.stats.multitest as multi
 import statsmodels.api as sm
+import warnings
 
 try:
     from scanpy import logging as logg
 except ImportError:
     pass
 
+from .version import __version__
 
 ############# BELOW is data formating and readin #####################
 def generate_feature_table(infile, outfile):
@@ -94,14 +96,14 @@ def diff_list(list1, list2):
     return list(c - d)
 
 
-def read_in_files(Indir, ftable_loc, method = 'FeatureCount'):
+def read_in_files(Indir, ftable ,method = 'FeatureCount'):
     '''
     Read in STAR aligned files. 
     
     Input
     -----
     Indir: FeatureCount output folder path or HTSeqcount output file path
-    ftable_loc: Gene feature table path, ftable must have two columns with ['Gene Name', 'Gene Type'] with Ensembl ID as index
+    ftable: Gene feature table, ftable must have two columns with ['Gene Name', 'Gene Type'] with Ensembl ID as index
     method: Counting method, can be either 'FeatureCount' or 'HTSeqcount', default: FeatureCount
     
     Returns
@@ -111,7 +113,7 @@ def read_in_files(Indir, ftable_loc, method = 'FeatureCount'):
     '''
     
     if method == 'FeatureCount':
-    # first tidy up X
+        # first tidy up X
         X = pd.read_csv(Indir+'/fcounts/fcounts.txt', delimiter='\t', index_col=0, skiprows=1)
         GT = X.iloc[['ERCC-' not in x for x in X.index],0:5].copy()
         X = X.iloc[:,5:].transpose().copy()
@@ -129,6 +131,8 @@ def read_in_files(Indir, ftable_loc, method = 'FeatureCount'):
         QC = QC[[x for x in QC.columns if 'Unassigned' in x]]
     elif method == 'HTSeqcount':
         X = pd.read_csv(Indir, delimiter='\t', index_col=0).transpose()
+        X['obs_names'] = X.index
+        X = X.groupby('obs_names').sum()
         ERCC = X.iloc[:,['ERCC-' in x for x in X.columns]].copy()
         QC = X.iloc[:,['__' in x for x in X.columns]].copy()
         QC.columns = [x.replace('__','') for x in QC.columns]
@@ -138,23 +142,27 @@ def read_in_files(Indir, ftable_loc, method = 'FeatureCount'):
         raise ValueError('method can only be either FeatureCount or HTSeqcount.')
     
     # Combine feature table
-    ftable = pd.read_csv(ftable_loc, delimiter='\t', index_col=0, header=None)
+    # ftable = pd.read_csv(ftable_loc, delimiter='\t', index_col=0, header=None)
     ftable = ftable.iloc[['ERCC-' not in x for x in ftable.index],:].copy()
     difG = diff_list(list(X.columns), list(ftable.index))
     if difG:
         raise ValueError(f'Gene names in Feature table do not match the ones in count table. Different genes: {difG}')
     ftable.columns = ['Gene Name', 'Gene Type']
+    ftable = ftable.loc[X.columns,:].copy()
     if method == 'FeatureCount':
         FeatureTable = pd.concat([ftable,GT], axis=1)
     else:
         FeatureTable = ftable
-    FeatureTable = FeatureTable.loc[X.columns,:].copy()
     print('Count table shape: '+str(X.shape))
     print('Feature table shape:' + str(FeatureTable.shape))
     
     # New write in anndata frame
     adata = anndata.AnnData(X=X, var=FeatureTable, obs=QC)
-    adata.obsm['ERCC'] = ERCC
+    
+    if ERCC.empty:
+        warnings.warn('ERCC empty!')
+    else:
+        adata.obsm['ERCC'] = ERCC
     adata.var['Ensembl_ID'] = adata.var_names
     adata.var_names = adata.var['Gene Name']
     adata.var_names_make_unique()
@@ -178,7 +186,14 @@ def smartseq_qc(adata, cutoff=cutoff,
     Input
     -----
     adata: anndata object
-    cutoff: QC cutoffs, 6 in total, ordered by ['nMapped (log10)', 'nNuclear (log10)', 'fGenes:nTotal', 'nHCGenes', 'mito:nGenes', 'nERCC:nMapped']
+    cutoff: QC cutoffs (dictionary), 6 in total, default: 
+        {'nMapped (log10)': np.log10(2*(10**5)),
+        'nNuclear (log10)': 0,
+        'fGenes:nTotal': 0.2,
+        'nHCGenes': 4000,
+        'mito:nGenes': 0.2,
+        'nERCC:nMapped': 0.2
+        }
     MTpattern: mitochrondria gene pattern, default 'mt-' for mm10
     ncols: number of columns for plotting, default: 4
     figsize: size of the figure, default: (10,7)
@@ -341,16 +356,18 @@ def normalise_data(adata, reCalSF=True, method='ExpAllC', copy=False):
         sf_genes = est_size_factor(adata.X, method=method)
         adata.obs['sf_gene'] = sf_genes
         if 'ERCC' in adata.obsm_keys():
-            print('Calculate SF for erccs:')
-            sf_ercc = est_size_factor(adata.obsm['ERCC'], method=method)
-            adata.obs['sf_ercc'] = sf_ercc
+            if not adata.obsm['ERCC'].empty:
+                print('Calculate SF for erccs:')
+                sf_ercc = est_size_factor(adata.obsm['ERCC'], method=method)
+                adata.obs['sf_ercc'] = sf_ercc
     else:
         if 'sf_gene' not in adata.obs_keys():
             raise ValueError('sf_gene is not found in .obs, please set reCalSF=True.')
     
     adata.X = np.log1p(adata.X/adata.obs['sf_gene'][:,None])
     if 'ERCC' in adata.obsm_keys():
-        adata.obsm['ERCC_norm'] = np.log1p(adata.obsm['ERCC']/adata.obs['sf_ercc'][:,None])
+        if not adata.obsm['ERCC'].empty:
+            adata.obsm['ERCC_norm'] = np.log1p(adata.obsm['ERCC']/adata.obs['sf_ercc'][:,None])
     if copy:
         return adata.copy()
 
@@ -627,7 +644,7 @@ def detect_outlier_cells(adata, aMeanQ = 0.95, cv2aQ = 0.8, outQ = 0.8, s=10):
     aMean = adata.uns['varGenes']['genes']['mean']
     cv2a = adata.uns['varGenes']['genes']['cv2']
     idx = (aMean > np.quantile(aMean, aMeanQ)) & (cv2a > np.quantile(cv2a, cv2aQ))
-    GL = CBdata.var_names[idx]
+    GL = adata.var_names[idx]
     print('Number of selected Genes: ' + str(len(GL)))
     
     fig = plt.figure()
@@ -686,7 +703,7 @@ def plot_ma(adata, unsName='rank_genes_groups', cidx=0, Cells = None, save=False
     adata_sub = adata_sub.raw[:, gnames].X
     print(adata_sub.shape)
     if issparse(adata_sub):
-        adata_sub = adata_sub.todense()
+        adata_sub = adata_sub.toarray()
     normExp = np.mean(np.exp(adata_sub)-1, axis=0)
     del adata_sub
 
@@ -1140,4 +1157,211 @@ def quick_umap_proj(adata_new, umap_ref):
     X1_contiguous = np.ascontiguousarray(X1, dtype=np.float32)
     X1_umap = umap_ref.transform(X1_contiguous)
     return X1_umap
+
+################### BELOW is for plotting 3d ###################################
+from mpl_toolkits.mplot3d import Axes3D
+from matplotlib.colors import LinearSegmentedColormap
+cdict = {'red': ((0.0, 0.0, 0.0),
+                 (0.1, 0.5, 0.5),
+                 (0.2, 0.0, 0.0),
+                 (0.4, 0.2, 0.2),
+                 (0.6, 0.0, 0.0),
+                 (0.8, 1.0, 1.0),
+                 (1.0, 1.0, 1.0)),
+        'green':((0.0, 0.0, 0.0),
+                 (0.1, 0.0, 0.0),
+                 (0.2, 0.0, 0.0),
+                 (0.4, 1.0, 1.0),
+                 (0.6, 1.0, 1.0),
+                 (0.8, 1.0, 1.0),
+                 (1.0, 0.0, 0.0)),
+        'blue': ((0.0, 0.0, 0.0),
+                 (0.1, 0.5, 0.5),
+                 (0.2, 1.0, 1.0),
+                 (0.4, 1.0, 1.0),
+                 (0.6, 0.0, 0.0),
+                 (0.8, 0.0, 0.0),
+                 (1.0, 0.0, 0.0))}
+
+def plot_3d(adata_ref, obs_key, adata_new=None, obsm_key='X_diffmap', ncols=4,figsize=(6,6), 
+            alpha=0.5, azim=250,elev=30, markersize=1,components=[1,2,3], cmap=None, save=None):
+    '''
+    This function is temporarily used for 3d plot as scanpy projection='3d' function does not
+    work properly with the latest version due to matplotlib problem.
+    
+    Input
+    -----
+    adata_ref: reference anndata object
+    obs_key: the obs key to plot, if adata_new is None, then it is the obs key from adata_ref, otherwise, it is from adata_new
+    adata_new: new anndata object, if this is not None, then adata_ref will be plotted as background
+    obsm_key: obsm layout, default: X_diffmap
+    ncols: number of columns for each row, default: 4
+    figsize: figure size, default: (6,6)
+    alpha: transparency, default: 0.5
+    azim: rotation parameter, default: 250
+    elev: rotation parameter, default: 30
+    markersize: point size, default: 1
+    components: components to plot, default: 1,2,3
+    cmap: color map, if None, using default rainbow color
+    save: figure name for saving, default: None
+    
+    Returns
+    -----
+    3d scatter plot showing the layouts
+    
+    '''
+    nkey = len(obs_key)
+    if nkey <=4:
+        ncols = nkey
+    nrows = int(np.ceil((nkey)/ncols))
+    fig = plt.figure(figsize=figsize)
+    for nk in range(nkey):
+        k = obs_key[nk]
+        ax = fig.add_subplot(nrows, ncols, nk+1, projection='3d')
+        ax.view_init(azim=azim, elev=elev)
+        ax.grid(False)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_zticks([])
+        
+        if adata_new is None:
+            adata = adata_ref.copy()
+        else:
+            adata = adata_new.copy()
+            dm_ref = adata_ref.obsm[obsm_key]
+            ax.plot(dm_ref[:,components[0]],dm_ref[:,components[1]],dm_ref[:,components[2]], '.', markersize=markersize, c='#d3d3d3', label = 'Ref_data', alpha =alpha)
+
+        dm_new = adata.obsm[obsm_key]
+        if k in adata.obs_keys():
+            obs_term = np.array(adata.obs[k].values)
+        elif k in adata.raw.var_names:
+            obs_term = adata.raw[:, k].X.flatten()
+        if obs_term.dtype == 'float' or obs_term.dtype == int or obs_term.dtype == 'float32':
+            if cmap is None:
+                cmap = LinearSegmentedColormap('my_colormap',cdict,256) 
+            #print(np.array(obs_term.values))
+            conti_fig = ax.scatter(dm_new[:,components[0]],dm_new[:,components[1]],dm_new[:,components[2]], '.', s=markersize, c=obs_term, cmap=cmap, alpha =alpha)
+            fig.colorbar(conti_fig, shrink=0.5)
+            ax.set_title(k)
+        
+        else:
+            obs_term = adata.obs[k].astype('category')
+            cats = obs_term.cat.categories
+            if k+'_colors' in adata.uns_keys():
+                color_pal = adata.uns[k+'_colors']
+            else:
+                color_pal = sc.pl.palettes.default_20[0:len(cats)]
+            for i in range(len(cats)):
+                #print(cats[i])
+                idx = obs_term==cats[i]
+                ax.plot(dm_new[idx,components[0]],dm_new[idx,components[1]],dm_new[idx,components[2]], '.', markersize=markersize, c=color_pal[i], label = cats[i], alpha =alpha)
+            ax.set_title(k)
+            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+        
+        plt.tight_layout()
+    if save is not None:
+        plt.savefig(save)
+        
+
+###################### BELOW is for pathway analysis ############################################
+def pathway_score_cal(adata, DBcont, minGS=5, maxGS=500):
+    '''
+    This function is to calculate geometric mean for each terms in the database for each cell.
+    
+    Input
+    -----
+    adata: the anndata object
+    DBcont: the gmt read in file, can be either downloaded from GSEA website or user defined
+    minGS: min number of genes in the gene set, default: 5
+    maxGS: max number of genes in the gene set, default: 500
+    
+    Returns
+    -----
+    Exp pd DataFrame for database, rows are cells and columns are DB terms.
+    
+    '''
+    expArray = []
+    pnames = np.array([])
+    TotalGenes = [x.upper() for x in adata.raw.var_names]
+    for l in range(len(DBcont)):
+        lcont = DBcont[l].split('\t')
+        pathway = lcont[0]
+        DBGenes = [x.upper() for x in lcont[2:]]
+        DBGenes = np.in1d(TotalGenes, DBGenes)
+        if ((np.sum(DBGenes) < minGS) or (np.sum(DBGenes) > maxGS)): 
+            next
+        else:
+            Exp = np.mean(adata.raw[:, DBGenes].X, axis=1)
+            expArray.append(Exp)
+            pnames = np.append(pnames, pathway)
+    expArray=pd.DataFrame(np.vstack(expArray).T)
+    expArray.index = adata.obs_names
+    expArray.columns = pnames
+    return expArray
+
+import scipy.stats as stats
+import statsmodels.stats.multitest as multi
+def pathway_analysis(GL, TotalGenes, DBcont, minGS=5, maxGS=500):
+    '''
+    This function is to calculate the enriched database terms for a given gene set using hypergeometric test.
+    
+    Input
+    -----
+    GL: a given gene set
+    TotalGenes: total number of genes, can be found from len(adata.raw.var_names)
+    DBcont: the gmt read in file, can be either downloaded from GSEA website or user defined
+    minGS: min number of genes in the gene set, default: 5
+    maxGS: max number of genes in the gene set, default: 500
+    
+    Returns
+    -----
+    pd DataFrame for each term of the databse, including:
+    Pathway: name of the pathway
+    k: number of overlapped genes between the gene list and the pathway
+    M: number of total genes
+    n: numbber of genes in the pathway
+    N: number of genes in the gene list
+    pval: hypergeometric p value
+    OLGenes: overlapped genes
+    padj: adjusted p value by BH method
+    
+    '''
+    TotalGenes = [x.upper() for x in TotalGenes]
+    M = len(TotalGenes)
+    GL = [x.upper() for x in GL]
+    
+    saveDict = {}
+    saveDict['Pathway'] = []
+    saveDict['k'] = []
+    saveDict['M'] = []
+    saveDict['n'] = []
+    saveDict['N'] = []
+    saveDict['pval'] = []
+    saveDict['OLGenes'] = []
+    for l in range(len(DBcont)):
+        lcont = DBcont[l].split('\t')
+        pathway = lcont[0]
+        DBGenes = [x.upper() for x in lcont[2:]]
+        DBGenes = np.intersect1d(DBGenes, TotalGenes)
+        n = len(DBGenes)
+        N = len(GL)
+        OLGenes = np.intersect1d(DBGenes, GL)
+        k = len(OLGenes)
+        if ((n >=minGS) or (n <= maxGS)):
+            #print('k:'+str(k-1)+' M:'+str(M)+' n:'+str(n)+' N:'+str(N))
+            pval = stats.hypergeom.sf(k-1, M, n, N)
+            saveDict['Pathway'].append(pathway)
+            saveDict['k'].append(k)
+            saveDict['M'].append(M)
+            saveDict['n'].append(n)
+            saveDict['N'].append(N)
+            saveDict['pval'].append(pval)
+            saveDict['OLGenes'].append(';'.join(OLGenes))
+    pA = np.array(saveDict['pval'])
+    pA[np.isnan(pA)] = 1
+    _, padj, _, _ = multi.multipletests(pA, method='fdr_bh')
+    saveDict['padj'] = padj
+    saveDF = pd.DataFrame.from_dict(saveDict)
+    saveDF = saveDF.sort_values(by='padj')
+    return saveDF
 
