@@ -30,12 +30,20 @@ The package contains the following steps:
 	- **quick_umap**: Similar to the ingest function in [scanpy](https://github.com/theislab/scanpy). Umap was calculated using [umap](https://github.com/lmcinnes/umap) python package. Parameters used as [scanpy](https://github.com/theislab/scanpy) defaults.
 	- **quick_umap_proj**: Projection of new data onto reference data
 
+5. **<ins>3d plots</ins>**
+	- **plot_3d**: Generate 3d plots from anndata object as the projection='3d' function does not work properly in the latest scanpy due to matplotlib issues
+	
+6. **<ins>Pathway analysis</ins>**:
+	- **pathway_score_cal**: Calculate geometric mean for each terms in the databse for each cell, which can be used to color the defined layout
+	- **pathway_analysis**: Calculate the enriched database terms for a given gene set using geometric test.
+
 ## Installation
 
 smqpp depends on numpy, matplotlib, pandas, anndata, scipy and statsmodels. The package is available on pip and can be easily installed as follows:
 
 	pip install smqpp
 or
+	
 	download the file from github 
 	tar zxvf smqpp
 	cd smqpp
