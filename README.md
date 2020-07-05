@@ -6,6 +6,7 @@ smqpp is the preprocessing pipeline for Smart-Seq2 data, specifically for datase
 
 The package contains the following steps:
 1. **<ins>Preanalysis</ins>**
+	- **generate_feature_table**: If gene feature table not available then this can be generate using this function
 	- **read_in_files**: Read in count and QC inputs and format them into anndata object
 	- **reformat_meta**: Reformat metatable to keep all versions consistent (Due to different versions of metadata spread sheet from google drive)
 	- **smartseq_qc**: bglab equivalent quality control
