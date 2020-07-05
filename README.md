@@ -44,7 +44,7 @@ smqpp depends on numpy, matplotlib, pandas, anndata, scipy and statsmodels. The 
 	pip install smqpp
 or
 	
-	download the file from github 
+	download the file from github using git clone
 	tar zxvf smqpp
 	cd smqpp
 	pip install .
