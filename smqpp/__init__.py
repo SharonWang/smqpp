@@ -159,7 +159,9 @@ def read_in_files(Indir, ftable ,method = 'FeatureCount'):
     # New write in anndata frame
     adata = anndata.AnnData(X=X, var=FeatureTable, obs=QC)
     
-    if ERCC.empty:
+    # Here change ERCC to array as obsm only accepts arrays
+    ERCC = np.array(ERCC)
+    if ERCC.size == 0:
         warnings.warn('ERCC empty!')
     else:
         adata.obsm['ERCC'] = ERCC
@@ -219,7 +221,7 @@ def smartseq_qc(adata, cutoff=cutoff,
     if 'ERCC' not in adata.obsm_keys():
         erccCNT = np.zeros(adata.shape[0])
     else:
-        erccCNT = np.sum(adata.obsm['ERCC'], axis=1).values
+        erccCNT = np.sum(adata.obsm['ERCC'], axis=1)
     qcNames = [x for x in adata.obs_keys() if 'QC' in x]
     if not qcNames:
         qcCNT = np.zeros(adata.shape[0])
@@ -356,7 +358,7 @@ def normalise_data(adata, reCalSF=True, method='ExpAllC', copy=False):
         sf_genes = est_size_factor(adata.X, method=method)
         adata.obs['sf_gene'] = sf_genes
         if 'ERCC' in adata.obsm_keys():
-            if not adata.obsm['ERCC'].empty:
+            if adata.obsm['ERCC'].size !=0:
                 print('Calculate SF for erccs:')
                 sf_ercc = est_size_factor(adata.obsm['ERCC'], method=method)
                 adata.obs['sf_ercc'] = sf_ercc
@@ -366,7 +368,7 @@ def normalise_data(adata, reCalSF=True, method='ExpAllC', copy=False):
     
     adata.X = np.log1p(adata.X/adata.obs['sf_gene'][:,None])
     if 'ERCC' in adata.obsm_keys():
-        if not adata.obsm['ERCC'].empty:
+        if adata.obsm['ERCC'].size !=0:
             adata.obsm['ERCC_norm'] = np.log1p(adata.obsm['ERCC']/adata.obs['sf_ercc'][:,None])
     if copy:
         return adata.copy()
