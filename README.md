@@ -36,7 +36,7 @@ The package contains the following steps:
 	
 6. **<ins>Pathway analysis</ins>**:
 	- **pathway_score_cal**: Calculate geometric mean for each terms in the databse for each cell, which can be used to color the defined layout
-	- **pathway_analysis**: Calculate the enriched database terms for a given gene set using geometric test.
+	- **pathway_analysis**: Calculate the enriched database terms for a given gene set using hypergeometric test.
 
 ## Installation
 
