@@ -1290,7 +1290,7 @@ def pathway_score_cal(adata, DBcont, minGS=5, maxGS=500):
         pathway = lcont[0]
         DBGenes = [x.upper() for x in lcont[2:]]
         DBGenes = np.in1d(TotalGenes, DBGenes)
-        if ((np.sum(DBGenes) < minGS) or (np.sum(DBGenes) > maxGS)): 
+        if ((np.sum(DBGenes) < minGS) & (np.sum(DBGenes) > maxGS)): 
             next
         else:
             Exp = np.mean(adata.raw[:, DBGenes].X, axis=1)
