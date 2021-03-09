@@ -2,7 +2,7 @@
 
 ## Introduction
 
-smqpp is the preprocessing pipeline for Smart-Seq2 data, specifically for datasets generated from Gottgens lab. The code was adpoted from [bglab](https://github.com/wjawaid/bglab) package developed by Wajid Jawaid.
+smqpp is the preprocessing pipeline for Smart-Seq2 data, specifically for datasets generated from Gottgens lab. The QC part of code was adpoted from [bglab](https://github.com/wjawaid/bglab) package developed by Wajid Jawaid.
 
 The package contains the following steps:
 1. **<ins>Preanalysis</ins>**
