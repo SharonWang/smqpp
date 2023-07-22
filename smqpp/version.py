@@ -1,3 +1,3 @@
 # author: Xiaonan Wang <xw251@cam.ac.uk>
 
-__version__="0.1.2"
+__version__="0.1.3"

@@ -366,10 +366,10 @@ def normalise_data(adata, reCalSF=True, method='ExpAllC', copy=False):
         if 'sf_gene' not in adata.obs_keys():
             raise ValueError('sf_gene is not found in .obs, please set reCalSF=True.')
     
-    adata.X = np.log1p(adata.X/adata.obs['sf_gene'][:,None])
+    adata.X = np.log1p(adata.X/adata.obs['sf_gene'].values[:,None])
     if 'ERCC' in adata.obsm_keys():
         if adata.obsm['ERCC'].size !=0:
-            adata.obsm['ERCC_norm'] = np.log1p(adata.obsm['ERCC']/adata.obs['sf_ercc'][:,None])
+            adata.obsm['ERCC_norm'] = np.log1p(adata.obsm['ERCC']/adata.obs['sf_ercc'].values[:,None])
     if copy:
         return adata.copy()
 
@@ -512,7 +512,7 @@ def tech_var(adata, useERCC=True, cvThresh=.3, quant=.8, minBiolDisp=.5**2,
     a1tilde = 1/sMean[useForFit]
     x = sm.add_constant(a1tilde, prepend=False)
     y = cv2s[useForFit]
-    link_func = sm.genmod.families.links.identity
+    link_func = sm.genmod.families.links.Identity()
     fit = sm.GLM(y, x, family=sm.families.Gamma(link=link_func)).fit()
 
     a0 = fit.params[1]
@@ -598,8 +598,8 @@ def plot_tech_var(adata, s=10, save=None):
     fig = plt.figure()
     ax = fig.add_subplot(111)
     plt.scatter(g_df.loc[~g_df['highVar'],:]['mean'], g_df.loc[~g_df['highVar'],:]['cv2'], color='grey', s=s)
-    ax.set_yscale('log',basey=10)
-    ax.set_xscale('log',basex=10)
+    ax.set_yscale('log',base=10)
+    ax.set_xscale('log',base=10)
     ax.set_ylabel(r'$\sigma^{2}/\mu^{2}$')
     ax.set_xlabel(r'$\mu$')
     ax.grid(False)
@@ -985,7 +985,8 @@ def compute_connectivities_umap(
     local_connectivity=1.0,
 ):
 
-    """    This code is copied from scanpy!!!
+    """\
+    This code is copied from scanpy!!!
     
     This is from umap.fuzzy_simplicial_set [McInnes18]_.
     Given a set of data X, a neighborhood size, and a measure of distance
@@ -1260,7 +1261,7 @@ def plot_3d(adata_ref, obs_key, adata_new=None, obsm_key='X_diffmap', ncols=4,fi
             ax.set_title(k)
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
         
-        plt.tight_layout()
+    plt.tight_layout()
     if save is not None:
         plt.savefig(save)
         
@@ -1290,8 +1291,8 @@ def pathway_score_cal(adata, DBcont, minGS=5, maxGS=500):
         pathway = lcont[0]
         DBGenes = [x.upper() for x in lcont[2:]]
         DBGenes = np.in1d(TotalGenes, DBGenes)
-        if ((np.sum(DBGenes) < minGS) & (np.sum(DBGenes) > maxGS)): 
-            next
+        if ((np.sum(DBGenes) < minGS) or (np.sum(DBGenes) > maxGS)): 
+            continue
         else:
             Exp = np.mean(adata.raw[:, DBGenes].X, axis=1)
             expArray.append(Exp)
