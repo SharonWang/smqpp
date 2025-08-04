@@ -700,6 +700,7 @@ def plot_ma(adata, unsName='rank_genes_groups', cidx=0, Cells = None, save=False
     print(adata_sub.shape)
     gnames = pd.DataFrame(adata.uns[unsName]['names']).iloc[:,cidx]
     logFC = pd.DataFrame(adata.uns[unsName]['logfoldchanges']).iloc[:,cidx]
+    scores = pd.DataFrame(adata.uns[unsName]['scores']).iloc[:,cidx]
     pvals = pd.DataFrame(adata.uns[unsName]['pvals']).iloc[:,cidx]
     padj = pd.DataFrame(adata.uns[unsName]['pvals_adj']).iloc[:,cidx]
     adata_sub = adata_sub.raw[:, gnames].X
@@ -734,7 +735,7 @@ def plot_ma(adata, unsName='rank_genes_groups', cidx=0, Cells = None, save=False
     if save:
         fig.savefig(save)
     
-    Ftable = pd.DataFrame(np.column_stack([gnames, logExp, logFC, pvals, padj]), columns=['GN','logMeanExp', 'logFC', 'pvals', 'padj'])
+    Ftable = pd.DataFrame(np.column_stack([gnames, logExp, logFC, scores, pvals, padj]), columns=['GN','logMeanExp', 'logFC', 'scores', 'pvals', 'padj'])
     return gnames[upidx], gnames[downidx], Ftable
 
 
@@ -1294,7 +1295,7 @@ def pathway_score_cal(adata, DBcont, minGS=5, maxGS=500):
         if ((np.sum(DBGenes) < minGS) or (np.sum(DBGenes) > maxGS)): 
             continue
         else:
-            Exp = np.mean(adata.raw[:, DBGenes].X, axis=1)
+            Exp = np.mean(adata.raw[:, DBGenes].X.toarray(), axis=1)
             expArray.append(Exp)
             pnames = np.append(pnames, pathway)
     expArray=pd.DataFrame(np.vstack(expArray).T)
