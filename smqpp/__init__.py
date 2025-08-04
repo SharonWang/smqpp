@@ -729,7 +729,7 @@ def plot_ma(adata, unsName='rank_genes_groups', cidx=0, Cells = None, save=False
     plt.axvline(x=exp_cutoff, color='grey', linestyle = '--')
     plt.xlabel('log2 Mean Exp')
     plt.ylabel('log2 Fold Change')
-    plt.grid(b=None)
+    plt.grid(False)
     plt.show()
     if save:
         fig.savefig(save)
@@ -744,7 +744,7 @@ import numpy as np
 from scipy.stats import chi2
 import statsmodels.api as sm
 import statsmodels.stats.multitest as multi
-from scipy.signal import gaussian
+from scipy.signal.windows import gaussian
 
 def ns(pt, df=3):
     '''
